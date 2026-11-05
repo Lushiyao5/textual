@@ -184,3 +184,42 @@ async def test_calling_workers_from_within_workers(call_stack: Tuple[str]):
         for _ in range(len(call_stack)):
             await app.workers.wait_for_complete()
         assert app.call_stack == []
+
+
+async def test_default_description_abbreviates_large_arguments() -> None:
+    """The default description should abbreviate large arguments, not build their full repr.
+
+    Regression test for https://github.com/Textualize/textual/issues/6749: building the
+    full repr of a multi-megabyte argument costs more than a frame, synchronously,
+    before the worker even starts.
+    """
+    repr_lengths: list[int] = []
+
+    class TrackedStr(str):
+        def __repr__(self) -> str:
+            repr_lengths.append(len(self))
+            return str.__repr__(self)
+
+    class WorkApp(App):
+        @work
+        async def async_work(self, data: TrackedStr, numbers: List[int]) -> str:
+            return "foo"
+
+    worker: Worker[str] | None = None
+
+    class WorkApp(App):
+        @work
+        async def async_work(self, data: TrackedStr, numbers: List[int]) -> str:
+            return "foo"
+
+    app = WorkApp()
+    async with app.run_test():
+        worker = app.async_work(TrackedStr("x" * 1_000_000), list(range(100_000)))
+        await app.workers.wait_for_complete()
+
+    description = worker.description
+    assert description.startswith("async_work(")
+    assert "..." in description
+    assert len(description) < 500
+    # The full repr of a large argument must never be built.
+    assert all(length <= 128 for length in repr_lengths)

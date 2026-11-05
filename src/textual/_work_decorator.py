@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from functools import partial, wraps
 from inspect import iscoroutinefunction
+from itertools import islice
 from typing import TYPE_CHECKING, Callable, Coroutine, TypeVar, Union, cast, overload
 
 from typing_extensions import ParamSpec, TypeAlias
@@ -27,6 +28,63 @@ Decorator: TypeAlias = Callable[
     ],
     Callable[DecoratorParamSpec, "Worker[ReturnType]"],
 ]
+
+# Maximum number of characters or elements shown before a value is abbreviated.
+_ABBREVIATE_LIMIT = 64
+
+
+def _abbreviate_repr(value: object, limit: int = _ABBREVIATE_LIMIT) -> str:
+    """Build a repr of a value, abbreviating values that would be very large.
+
+    A full repr of a large argument (say, millions of characters of output) can
+    cost more than a frame to build, and the result is truncated again in
+    [Worker][textual.worker.Worker]. This keeps the informative head of the
+    repr without paying for the rest.
+
+    Args:
+        value: The value to build a repr of.
+        limit: Maximum number of characters or elements to include in full.
+
+    Returns:
+        A repr of the value, abbreviated if it is very large.
+    """
+    if isinstance(value, str):
+        if len(value) > limit:
+            return repr(value[:limit])[:-1] + "...'"
+        return repr(value)
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) > limit:
+            return repr(bytes(value[:limit]))[:-1] + "...'"
+        return repr(value)
+    try:
+        length = len(value)
+    except TypeError:
+        return repr(value)
+    if length <= limit:
+        return repr(value)
+    if isinstance(value, list):
+        items = ", ".join(_abbreviate_repr(item, limit) for item in value[:limit])
+        return f"[{items}, ...]"
+    if isinstance(value, tuple):
+        items = ", ".join(_abbreviate_repr(item, limit) for item in value[:limit])
+        return f"({items}, ...)"
+    if isinstance(value, set):
+        items = ", ".join(
+            _abbreviate_repr(item, limit) for item in islice(value, limit)
+        )
+        return f"{{{items}, ...}}"
+    if isinstance(value, frozenset):
+        items = ", ".join(
+            _abbreviate_repr(item, limit) for item in islice(value, limit)
+        )
+        return f"frozenset({{{items}, ...}})"
+    if isinstance(value, dict):
+        items = ", ".join(
+            f"{_abbreviate_repr(key, limit)}: {_abbreviate_repr(item, limit)}"
+            for key, item in islice(value.items(), limit)
+        )
+        return f"{{{items}, ...}}"
+    return repr(value)
 
 
 class WorkerDeclarationError(Exception):
@@ -128,9 +186,12 @@ def work(
                 debug_description = description
             else:
                 try:
-                    positional_arguments = ", ".join(repr(arg) for arg in args[1:])
+                    positional_arguments = ", ".join(
+                        _abbreviate_repr(arg) for arg in args[1:]
+                    )
                     keyword_arguments = ", ".join(
-                        f"{name}={value!r}" for name, value in kwargs.items()
+                        f"{name}={_abbreviate_repr(value)}"
+                        for name, value in kwargs.items()
                     )
                     tokens = [positional_arguments, keyword_arguments]
                     debug_description = f"{method.__name__}({', '.join(token for token in tokens if token)})"
